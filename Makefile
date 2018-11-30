@@ -1,7 +1,7 @@
 
-all: opalctl
+all: sed-opal-unlocker
 
-opalctl: opalctl.c
-	gcc opalctl.c -Wall -Wextra -O0 -o opalctl
+sed-opal-unlocker: sed-opal-unlocker.c
+	gcc $< -Wall -Wextra -Os -o $@
 
 .PHONY: all
