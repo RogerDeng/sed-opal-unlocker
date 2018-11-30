@@ -1,5 +1,5 @@
 /**
- * Front end to Linux Kernel SED TCG OPAL userpace interface
+ * Micro frontend to Linux Kernel SED TCG OPAL userpace interface
  */
 
 #include <errno.h>
@@ -13,22 +13,6 @@
 
 #include <linux/sed-opal.h>
 
-/*
- * Get this out of GDB from the sedutil-cli gdb function
-$2 = std::vector of length 34, capacity 34 = {0xd0, 0x20, ... }
- * First 2 chars are token and length, remove and insert rest below:
- */
-
-char hash[OPAL_KEY_MAX] = {
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00
-};
 
 void help(const char *banner)
 {
@@ -48,8 +32,12 @@ void help(const char *banner)
 
 int main(int argc, char* argv[])
 {
-	int ret = 0;
+	int ret = 1;
 	int mode = -1;
+	int fd = -1;
+	char buf[64];
+	int passwd_len = 0;
+	uint8_t passwd[OPAL_KEY_MAX];  // note: maybe not-NULL-terminated
 
 	// Parse arguments
 	if (argc < 4)
@@ -71,88 +59,80 @@ int main(int argc, char* argv[])
 	const char *passfile = argv[3];
 
 	// Load password
-	// TODO
-
-	// Open the device
-	int fd = open(dev, O_WRONLY);
+	fd = open(passfile, O_RDONLY);
 	if (fd < 0)
 	{
-		char buf[64];
-		snprintf(buf, sizeof(buf), "Failed to open %s", dev);
+		snprintf(buf, sizeof(buf), "Failed to open %s", passfile);
 		perror(buf);
-		ret = -1;
 		goto exit;
 	}
-
-	/* Rough notes about kernel call graph:
-
-	struct opal_lock_unlock {
-		struct opal_session_info session;
-		__u32 l_state;
-		__u8 __align[4];
-	};
-
-	Sets:
-
-	suspend->unlk = *lk_unlk;
-	suspend->lr = lk_unlk->session.opal_key.lr;
-
-	__opal_lock_unlock(..., struct opal_lock_unlock *lk_unlk) {
-		next();
+	passwd_len = read(fd, passwd, sizeof(passwd));
+	if (passwd_len < 0)
+	{
+		snprintf(buf, sizeof(buf), "Failed load password from %s", passfile);
+		perror(buf);
+		goto cleanup;
 	}
+	close(fd);
 
-	SUM = Single User Mode:
+	// Trim terminating newline (any flavor) when present
+	if (passwd[passwd_len - 1] == '\n')
+		passwd_len--;
+	if (passwd[passwd_len - 1] == '\r')
+		passwd_len--;
 
-	lock_unlock_locking_range() or lock_unlock_locking_range_sum()
-
-	*/
+	// Open the device
+	fd = open(dev, O_WRONLY);
+	if (fd < 0)
+	{
+		snprintf(buf, sizeof(buf), "Failed to open %s", dev);
+		perror(buf);
+		goto exit;
+	}
 
 	// Create necessary structure and zerofill it, just in case
 	struct opal_lock_unlock lk_unlk;
 	memset(&lk_unlk, 0, sizeof(struct opal_lock_unlock));
 
-	// Unlock OPAL drive for read and write
-	lk_unlk.l_state = OPAL_RW;
+	// Lock or unlock OPAL drive for read and write
+	lk_unlk.l_state = (mode == 0) ? OPAL_LK : OPAL_RW;
 	// Don't use single user mode
 	lk_unlk.session.sum = 0;
 	// Identify as admin1
 	lk_unlk.session.who = OPAL_ADMIN1;
-	// 0 locking range
+	// 0 locking range (global range)
 	lk_unlk.session.opal_key.lr = 0;
 	// Copy key
-	memcpy(lk_unlk.session.opal_key.key, hash, sizeof(hash));
+	memcpy(lk_unlk.session.opal_key.key, passwd, passwd_len);
 	// Set key size
-	lk_unlk.session.opal_key.key_len = sizeof(hash);
+	lk_unlk.session.opal_key.key_len = passwd_len;
 
-	// Check if everything is OK now
-	if (errno)
+	// Lock/unlock as requested
+	if (mode != 2)
 	{
-		perror("Error before ioctl");
-		goto cleanup;
+		ret = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &lk_unlk);
+		if (ret != 0)
+		{
+			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_LOCK_UNLOCK, ...)", dev);
+			perror(buf);
+			goto cleanup;
+		}
 	}
 
-	// Test the lk_unlk structure, this will give an error when the password is incorrect
-	ret = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &lk_unlk);
-	if (ret != 0)
+	// Save password for S3 when requested
+	if (mode >= 2)
 	{
-		char buf[64];
-		snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_LOCK_UNLOCK, ...)", dev);
-		perror(buf);
-		goto cleanup;
-	}
-
-	// Do the actual job
-	ret = ioctl(fd, IOC_OPAL_SAVE, &lk_unlk);
-	if (ret != 0)
-	{
-		char buf[64];
-		snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_SAVE, ...)", dev);
-		perror(buf);
-		goto cleanup;
+		ret = ioctl(fd, IOC_OPAL_SAVE, &lk_unlk);
+		if (ret != 0)
+		{
+			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_SAVE, ...)", dev);
+			perror(buf);
+			goto cleanup;
+		}
 	}
 
 cleanup:
 	close(fd);
 exit:
-	return ret;
+	return !!ret;
 }
