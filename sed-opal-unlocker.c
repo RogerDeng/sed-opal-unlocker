@@ -42,8 +42,9 @@ void help(const char *banner)
 	printf("\t<disk_path> is device path, ex. /dev/sda, /dev/nvme0n1, etc.\n");
 	printf("\t<password_file_path> is path to file containing the admin1 password\n");
 	printf("\n");
-	printf("Note: when using DTA sedutil-cli to initialize the drive, you need to use its\n");
-	printf("      -n option to disable password hashing, otherwise this utility won't work.\n");
+	printf("Note: when using DTA sedutil-cli to initialize the drive without disabling\n");
+	printf("      password hashing (-n option), you should use sedutil-passhasher.py\n");
+	printf("      companion script to prepare hashed password file. See README for details.\n");
 }
 
 int main(int argc, char* argv[])
@@ -91,11 +92,20 @@ int main(int argc, char* argv[])
 	}
 	close(fd);
 
-	// Trim terminating newline (any flavor) when present
-	if (passwd[passwd_len - 1] == '\n')
-		passwd_len--;
-	if (passwd[passwd_len - 1] == '\r')
-		passwd_len--;
+	// If this is binary file produced by sedutil-passhasher.py, strip leading magic number.
+	// Otherwise trim terminating newline (any flavor) when present.
+	if (passwd_len == 40 && memcmp(passwd, "\x00\x84\x11\xf8\x9a\x0f\x30\x93", 8) == 0)
+	{
+		passwd_len = 32;
+		memmove(passwd, passwd + 8, passwd_len);
+	}
+	else
+	{
+		if (passwd[passwd_len - 1] == '\n')
+			passwd_len--;
+		if (passwd[passwd_len - 1] == '\r')
+			passwd_len--;
+	}
 
 	// Open the device
 	fd = open(dev, O_WRONLY);
