@@ -38,7 +38,7 @@ void help(const char *banner)
 	printf("\tsed-opal-unlocker <operation> <disk_path> <password_file_path>\n");
 	printf("\n");
 	printf("Where:\n");
-	printf("\t<operation> is one of: lock, unlock, s3save, unlock+s3save\n");
+	printf("\t<operation> is one of: lock, unlock, MBRunshadow, s3save\n");
 	printf("\t<disk_path> is device path, ex. /dev/sda, /dev/nvme0n1, etc.\n");
 	printf("\t<password_file_path> is path to file containing the admin1 password\n");
 	printf("\n");
@@ -65,7 +65,7 @@ int main(int argc, char* argv[])
 		mode = 1;
 	else if (strcmp(argv[1], "s3save") == 0)
 		mode = 2;
-	else if (strcmp(argv[1], "unlock+s3save") == 0)
+	else if (strcmp(argv[1], "MBRunshadow") == 0)
 		mode = 3;
 	else
 		help("Invalid <operation>!");
@@ -116,42 +116,68 @@ int main(int argc, char* argv[])
 		goto exit;
 	}
 
-	// Create necessary structure and zerofill it, just in case
-	struct opal_lock_unlock lk_unlk;
-	memset(&lk_unlk, 0, sizeof(struct opal_lock_unlock));
-
-	// Lock or unlock OPAL drive for read and write
-	lk_unlk.l_state = (mode == 0) ? OPAL_LK : OPAL_RW;
-	// Don't use single user mode
-	lk_unlk.session.sum = 0;
-	// Identify as admin1
-	lk_unlk.session.who = OPAL_ADMIN1;
-	// 0 locking range (global range)
-	lk_unlk.session.opal_key.lr = 0;
-	// Copy key
-	memcpy(lk_unlk.session.opal_key.key, passwd, passwd_len);
-	// Set key size
-	lk_unlk.session.opal_key.key_len = passwd_len;
-
-	// Lock/unlock as requested
-	if (mode != 2)
+	if (mode < 3)
 	{
-		ret = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &lk_unlk);
-		if (ret != 0)
+		// Create necessary structure and zerofill it, just in case
+		struct opal_lock_unlock lk_unlk;
+		memset(&lk_unlk, 0, sizeof(struct opal_lock_unlock));
+
+		// Lock or unlock OPAL drive for read and write
+		lk_unlk.l_state = (mode == 0) ? OPAL_LK : OPAL_RW;
+		// Don't use single user mode
+		lk_unlk.session.sum = 0;
+		// Identify as admin1
+		lk_unlk.session.who = OPAL_ADMIN1;
+		// 0 locking range (global range)
+		lk_unlk.session.opal_key.lr = 0;
+		// Copy key
+		memcpy(lk_unlk.session.opal_key.key, passwd, passwd_len);
+		// Set key size
+		lk_unlk.session.opal_key.key_len = passwd_len;
+
+		// Lock/unlock as requested
+		if (mode < 2)
 		{
-			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_LOCK_UNLOCK, ...)", dev);
-			perror(buf);
-			goto cleanup;
+			ret = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &lk_unlk);
+			if (ret != 0)
+			{
+				snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_LOCK_UNLOCK, ...)", dev);
+				perror(buf);
+				goto cleanup;
+			}
+		}
+		// Save password for S3 when requested
+		else if (mode == 2)
+		{
+			ret = ioctl(fd, IOC_OPAL_SAVE, &lk_unlk);
+			if (ret != 0)
+			{
+				snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_SAVE, ...)", dev);
+				perror(buf);
+				goto cleanup;
+			}
 		}
 	}
-
-	// Save password for S3 when requested
-	if (mode >= 2)
+	else if (mode == 3)
 	{
-		ret = ioctl(fd, IOC_OPAL_SAVE, &lk_unlk);
+		struct opal_mbr_data mbr_data;
+		memset(&mbr_data, 0, sizeof(struct opal_mbr_data));
+
+		// Set MBRDone = Y
+		// NOTE: due to kernel API, this also sets MBREnabled = Y... but this should not hurt,
+		// cause MBRunshadow is expected to be called only when MBREnabled = Y already.
+		mbr_data.enable_disable = 1;
+		// 0 locking range (global range)
+		mbr_data.key.lr = 0;
+		// Copy key
+		memcpy(mbr_data.key.key, passwd, passwd_len);
+		// Set key size
+		mbr_data.key.key_len = passwd_len;
+
+		ret = ioctl(fd, IOC_OPAL_ENABLE_DISABLE_MBR, &mbr_data);
 		if (ret != 0)
 		{
-			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_SAVE, ...)", dev);
+			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_ENABLE_DISABLE_MBR, ...)", dev);
 			perror(buf);
 			goto cleanup;
 		}
