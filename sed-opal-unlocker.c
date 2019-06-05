@@ -267,6 +267,8 @@ int main(int argc, char* argv[])
 			if (ret != 0)
 			{
 				snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_LOCK_UNLOCK, ...)", dev);
+				if (errno == 0)
+					errno = EINVAL;
 				perror(buf);
 				goto cleanup;
 			}
@@ -303,6 +305,8 @@ int main(int argc, char* argv[])
 		if (ret != 0)
 		{
 			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_ENABLE_DISABLE_MBR, ...)", dev);
+			if (errno == 0)
+				errno = EINVAL;
 			perror(buf);
 			goto cleanup;
 		}
