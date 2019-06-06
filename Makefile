@@ -1,20 +1,32 @@
 CC := gcc
 CFLAGS ?= -Os -Wall -Wextra
+
+override LIBS :=
 ifeq ($(STATIC),1)
-CFLAGS += -static
+override CFLAGS += -static
 endif
 ENCRYPTED_PASSWORDS ?= 1
 ifeq ($(ENCRYPTED_PASSWORDS),1)
-CFLAGS += -DENCRYPTED_PASSWORDS=1 -largon2
+override CFLAGS += -DENCRYPTED_PASSWORDS=1
+override LIBS   += -largon2
 endif
+
+SRCS := $(wildcard *.c)
+OBJS := $(SRCS:%.c=%.o)
 
 
 all: sed-opal-unlocker
 
-sed-opal-unlocker: sed-opal-unlocker.c
-	$(CC) $(CFLAGS) $< -o $@
+%.o: %.c
+	$(CC) $(CFLAGS) -MP -MMD -MT $@ -MF $(@:%.o=%.d) -c $< -o $@
+
+sed-opal-unlocker: $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LIBS)
 
 clean:
-	rm -f sed-opal-unlocker
+	rm -f *.[od] sed-opal-unlocker
+
+# generic deps
+-include $(SRCS:%.c=%.d)
 
 .PHONY: all clean

@@ -19,6 +19,7 @@
  * limitations under the License.
  */
 
+#include "mem_zeroize.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -72,6 +73,7 @@ static int decrypt_password(uint8_t *passwd, int passwd_len)
 		uint8_t  data[];
 	} *decoded = (void*)passwd;
 	struct termios term, save;
+	int ret = -1;
 	int i, n, passphr_len, salt_len, data_len;
 	uint8_t salt[64];
 	uint8_t xor_key[256];
@@ -90,7 +92,7 @@ static int decrypt_password(uint8_t *passwd, int passwd_len)
 		if (!fp)
 		{
 			fprintf(stderr, "Failed to decrypt password file: failed to open %s\n", fpath);
-			return -1;
+			goto exit;
 		}
 		n = fread(&salt[salt_len], 1, 32, fp);
 		fclose(fp);
@@ -101,7 +103,7 @@ static int decrypt_password(uint8_t *passwd, int passwd_len)
 	else if (decoded->salt_type != 'r')
 	{
 		fprintf(stderr, "Failed to decrypt password file: bad salt type %d\n", decoded->salt_type);
-		return -1;
+		goto exit;
 	}
 
 	/* read passphrase */
@@ -113,14 +115,14 @@ static int decrypt_password(uint8_t *passwd, int passwd_len)
 		if (tcgetattr(STDIN_FILENO, &term) < 0)
 		{
 			fprintf(stderr, "Failed to decrypt password file: unable to disable terminal echo #1\n");
-			return -1;
+			goto exit;
 		}
 		save = term;
 		term.c_lflag &= ~ECHO;
 		if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &term) < 0)
 		{
 			fprintf(stderr, "Failed to decrypt password file: unable to disable terminal echo #2\n");
-			return -1;
+			goto exit;
 		}
 	}
 	pp = fgets(passphrase, sizeof(passphrase), stdin);
@@ -132,7 +134,7 @@ static int decrypt_password(uint8_t *passwd, int passwd_len)
 	if (pp != passphrase)
 	{
 		fprintf(stderr, "Failed to decrypt password file: unable to read passphrase\n");
-		return -1;
+		goto exit;
 	}
 	passphr_len = strlen(passphrase);
 	while (passphr_len > 0 && passphrase[passphr_len - 1] == '\n')
@@ -148,14 +150,18 @@ static int decrypt_password(uint8_t *passwd, int passwd_len)
 	if (n < 0)
 	{
 		fprintf(stderr, "Failed to decrypt password file: argon2id failed with error code %d\n", n);
-		return -1;
+		goto exit;
 	}
 
 	/* xor to "decrypt" password */
 	for (i = 0; i < data_len; i++)
 		passwd[i] = xor_key[i] ^ decoded->data[i];
 
-	return passwd_len - sizeof(*decoded);
+	ret = passwd_len - sizeof(*decoded);
+exit:
+	mem_zeroize(xor_key, sizeof(xor_key));
+	mem_zeroize(passphrase, sizeof(passphrase));
+	return ret;
 }
 #endif  /* ENCRYPTED_PASSWORDS */
 
@@ -168,6 +174,8 @@ int main(int argc, char* argv[])
 	char buf[64];
 	int passwd_len = 0;
 	uint8_t passwd[OPAL_KEY_MAX];  // note: maybe not-NULL-terminated
+	struct opal_lock_unlock lk_unlk;
+	struct opal_mbr_data mbr_data;
 
 	// Parse arguments
 	if (argc < 4)
@@ -183,7 +191,7 @@ int main(int argc, char* argv[])
 	else
 		help("Invalid <operation>!");
 	if (mode < 0)
-		return 0;
+		return 1;
 
 	const char *dev = argv[2];
 	const char *passfile = argv[3];
@@ -244,7 +252,6 @@ int main(int argc, char* argv[])
 	if (mode < 3)
 	{
 		// Create necessary structure and zerofill it, just in case
-		struct opal_lock_unlock lk_unlk;
 		memset(&lk_unlk, 0, sizeof(struct opal_lock_unlock));
 
 		// Lock or unlock OPAL drive for read and write
@@ -287,7 +294,6 @@ int main(int argc, char* argv[])
 	}
 	else if (mode == 3)
 	{
-		struct opal_mbr_data mbr_data;
 		memset(&mbr_data, 0, sizeof(struct opal_mbr_data));
 
 		// Set MBRDone = Y
@@ -315,5 +321,9 @@ int main(int argc, char* argv[])
 cleanup:
 	close(fd);
 exit:
+	mem_zeroize(&mbr_data, sizeof(mbr_data));
+	mem_zeroize(&lk_unlk, sizeof(lk_unlk));
+	mem_zeroize(passwd, sizeof(passwd));
+	mem_zeroize(buf, sizeof(buf));
 	return !!ret;
 }
