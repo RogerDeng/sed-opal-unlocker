@@ -38,7 +38,7 @@
 #endif
 
 
-static void help(const char *banner)
+static int help(const char *banner)
 {
 	if (banner)
 		puts(banner);
@@ -47,6 +47,7 @@ static void help(const char *banner)
 	printf("\n");
 	printf("Where:\n");
 	printf("\t<operation> is one of: lock, unlock, MBRunshadow, s3save\n");
+	printf("\t            or comma-separated combination of them (except lock)\n");
 	printf("\t<disk_path> is device path, ex. /dev/sda, /dev/nvme0n1, etc.\n");
 	printf("\t<password_file_path> is path to file containing the admin1 password\n");
 #ifdef ENCRYPTED_PASSWORDS
@@ -57,6 +58,45 @@ static void help(const char *banner)
 	printf("Note: when using DTA sedutil-cli to initialize the drive without disabling\n");
 	printf("      password hashing (-n option), you should use sedutil-passhasher.py\n");
 	printf("      companion script to prepare hashed password file. See README for details.\n");
+
+	return (banner != NULL);
+}
+
+
+#define OP_LOCK     (1 << 0)
+#define OP_UNLOCK   (1 << 1)
+#define OP_UNSHADOW (1 << 2)
+#define OP_S3SAVE   (1 << 3)
+static int parse_operation(const char *opstring)
+{
+	char buf[1024], *p, *rest;
+	int ret = 0;
+
+	if (strlen(opstring) >= sizeof(buf))
+		return -1;
+	p = strcpy(buf, opstring);
+
+	while (p && *p)
+	{
+		rest = strchr(p, ',');
+		if (rest)
+			*rest++ = '\0';
+
+		if (strcmp(p, "lock") == 0)
+			ret |= OP_LOCK;
+		else if (strcmp(p, "unlock") == 0)
+			ret |= OP_UNLOCK;
+		else if (strcmp(p, "s3save") == 0)
+			ret |= OP_S3SAVE;
+		else if (strcmp(p, "MBRunshadow") == 0)
+			ret |= OP_UNSHADOW;
+		else
+			return -1;
+
+		p = rest;
+	}
+
+	return ret;
 }
 
 
@@ -179,19 +219,12 @@ int main(int argc, char* argv[])
 
 	// Parse arguments
 	if (argc < 4)
-		help("Not enough arguments!");
-	else if (strcmp(argv[1], "lock") == 0)
-		mode = 0;
-	else if (strcmp(argv[1], "unlock") == 0)
-		mode = 1;
-	else if (strcmp(argv[1], "s3save") == 0)
-		mode = 2;
-	else if (strcmp(argv[1], "MBRunshadow") == 0)
-		mode = 3;
-	else
-		help("Invalid <operation>!");
-	if (mode < 0)
-		return 1;
+		return help("Not enough arguments!");
+	mode = parse_operation(argv[1]);
+	if (mode <= 0)
+		return help("Invalid <operation>!");
+	if ((mode & OP_LOCK) && (mode != OP_LOCK))
+		return help("<operation> \"lock\" cannot be combined with other ones.");
 
 	const char *dev = argv[2];
 	const char *passfile = argv[3];
@@ -249,13 +282,13 @@ int main(int argc, char* argv[])
 		goto exit;
 	}
 
-	if (mode < 3)
+	if (mode & (OP_LOCK | OP_UNLOCK | OP_S3SAVE))
 	{
 		// Create necessary structure and zerofill it, just in case
 		memset(&lk_unlk, 0, sizeof(struct opal_lock_unlock));
 
 		// Lock or unlock OPAL drive for read and write
-		lk_unlk.l_state = (mode == 0) ? OPAL_LK : OPAL_RW;
+		lk_unlk.l_state = (mode & OP_LOCK) ? OPAL_LK : OPAL_RW;
 		// Don't use single user mode
 		lk_unlk.session.sum = 0;
 		// Identify as admin1
@@ -268,7 +301,7 @@ int main(int argc, char* argv[])
 		lk_unlk.session.opal_key.key_len = passwd_len;
 
 		// Lock/unlock as requested
-		if (mode < 2)
+		if (mode & (OP_LOCK | OP_UNLOCK))
 		{
 			ret = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &lk_unlk);
 			if (ret != 0)
@@ -281,7 +314,7 @@ int main(int argc, char* argv[])
 			}
 		}
 		// Save password for S3 when requested
-		else if (mode == 2)
+		if (mode & OP_S3SAVE)
 		{
 			ret = ioctl(fd, IOC_OPAL_SAVE, &lk_unlk);
 			if (ret != 0)
@@ -292,7 +325,7 @@ int main(int argc, char* argv[])
 			}
 		}
 	}
-	else if (mode == 3)
+	if (mode & OP_UNSHADOW)
 	{
 		memset(&mbr_data, 0, sizeof(struct opal_mbr_data));
 
