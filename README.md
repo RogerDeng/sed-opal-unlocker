@@ -5,8 +5,10 @@ Micro-utility for unlocking TCG-OPAL encrypted disks, utilizing CONFIG_BLK_SED_O
 
 ### Background
 
-I'm using this tool to unlock non-boot disk from custom initramfs, loaded from EFI partition sitting on another non-opal-encrypted drive. The machine is headless, cannot boot from NVME and the password is provided on an USB key, so the standard [sedutil](https://github.com/Drive-Trust-Alliance/sedutil) Pre-Boot Authentication image is not an option.
+I'm using this tool to unlock:
 
+- non-boot disk from custom initramfs, loaded from EFI partition sitting on another non-opal-encrypted drive. The machine is headless, cannot boot from NVME and the password is provided on an USB key, so the standard [sedutil](https://github.com/Drive-Trust-Alliance/sedutil) Pre-Boot Authentication image is not an option
+- boot disk from custom PBA image (Linux EFI stub kernel + embedded initramfs) in my laptop... just cause I could.
 
 ### Features
 
@@ -16,12 +18,13 @@ I'm using this tool to unlock non-boot disk from custom initramfs, loaded from E
 - reads password from a separate file
 - supports password hashing used by sedutil-cli via separate one-time-use script
 - supports SATA and NVME disks
+- password file can be encrypted with another passphrase (requires [libargon2](https://github.com/P-H-C/phc-winner-argon2))
 
 
 ### What this utility cannot do
 
 - cannot unlock system drive (unless you create a custom Pre-Boot Authentication image with it; however s3save operation is supported when drive gets unlocked with sedutil's PBA image)
-- password cannot be read interactively, nor from cmdline argument
+- disk password cannot be read interactively, nor from cmdline argument (however you can encrypt the password file and unlock passphrase is obtained from stdin)
 - will not work with CONFIG_BLK_SED_OPAL=n kernel (and is Linux only, but this should be obvious now)
 
 
@@ -39,6 +42,13 @@ If you need a static binary:
     make STATIC=1
 ```
 
+If you wish to not depend on libargon2 at cost of disabling encrypted password file support (may be combined with STATIC=1):
+
+```
+    make ENCRYPTED_PASSWORDS=0
+```
+
+If you are Gentoo Linux user, you will find an ebuild in [my overlay](https://github.com/dex6/dexlay).
 
 ### Usage
 
@@ -47,9 +57,9 @@ If you need a static binary:
 ```
 
 Where:
-- `<operation>` is one of: lock, unlock, MBRunshadow, s3save
+- `<operation>` is one of: lock, unlock, MBRunshadow, s3save or comma-separated space-less combination of them (except lock)
 - `<disk_path>` is device path, eg. /dev/sda, /dev/nvme0n1, etc.
-- `<password_file_path>` is path to file containing the disk password
+- `<password_file_path>` is path to file containing the disk password; if password file is encrypted, passphrase for decrypting it is read from stdin.
 
 Operation specifies what the tool should do:
 - `lock`: lock the drive. Useful mainly for testing.
@@ -60,11 +70,14 @@ Operation specifies what the tool should do:
 When the disk has been initialized with sedutil-cli without using its `-n` option, the password which is send to the disk is a hash calculated using PKBDF2 algorithm from plain text password and the disk serial for salting. In order to use such password with `sed-opal-unlocker`, all you need to do is to store the hashed password in the password file. Fortunately, there's a Python script which will do this for you.
 
 ```
-    sedutil-passhasher.py <disk_path> <output_passwordhash_file_path>
+    sedutil-passhasher.py <disk_path> <output_passwordhash_file_path> [encrypt_password]
 ```
 
-You need to call this script once, as root, cause it reads serial number from the disk needed to salt the password for hashing. Plaintext password is entered on script standard input. Hashed password (with some magic value for file type recognition) is written to the output file specified by second argument. Note that the file will be overwritten when it exists.
+You need to call this script once, as root, cause it reads serial number from the disk needed to salt the password for hashing. Plaintext disk password is entered on script standard input. Hashed password (with some magic value for file type recognition) is written to the output file specified by second argument. Note that the file will be overwritten when it exists.
 
+When the last optional argument, [encrypt_password] is provided and set to 1, the hashed password file will be encrypted using additional "unlock passphrase", also interactively asked on standard input. The unlock passphrase can be optionally salted with current machine's DMI data (serial number or UUID), which makes it usable only on this machine. (This can be hacked around of course, but attacker needs to know this data cause it's not stored in the encrypted password file). When an encrypted password file is provided to sed-opal-unlocker, it will ask for the unlock passphrase on stdin. Note that password encryption currently cannot be used when disk has been initialized without password hashing (sedutil -n).
+
+Please also note that the encrypted password file does not store any authentication/verification data. Had the attacker obtained an encrypted passwordfile, he/she still cannot bruteforce it, cause only the disk can tell whether the unlock passphrase is correct or not. Even having access to the disk does not make bruteforcing easier, cause (a) argon2, (b) OPAL disks have limit how many times you may enter wrong password, and then will require a power-cycle to start talking to you again.
 
 ### Bonus: disk initialization notes
 
@@ -152,7 +165,7 @@ hexdump -C /dev/disk -n 512
     00000200
 ```
 
-7. Prepare hashed password file (if you preferred non-hashed password and added `-n` to sedutil-cli calls, skip this step and just write plaintext password to the password file)
+7. a) Prepare hashed password file (if you preferred non-hashed password and added `-n` to sedutil-cli calls, skip this step and just write plaintext password to the password file)
 
 ```
 cd sed-opal-unlocker
@@ -167,15 +180,36 @@ chmod 400 /somewhere/safe/mypassword.secret
 chown root:root /somewhere/safe/mypassword.secret
 ```
 
+7. b) When deciding to encrypt the hashed password file, it will look like this:
+
+```
+cd sed-opal-unlocker
+./sedutil-passhasher.py /dev/disk /somewhere/safe/mypassword.secret 1
+    Checking /dev/disk...
+    Found DISK MODEL with firmware FW_VER and serial b'1234567890           '
+    Encrypted password hash will be written into /somewhere/safe/mypassword.secret
+    Argon2id CPU cost = 13 iterations
+    Argon2id MEM cost = 341.375 MB
+    Argon2id threads  = 4
+    Enter SED password for /dev/disk (CTRL+C to quit): <enter password1234>
+    Enter passphrase for unlocking encrypted passwordhash file: <enter unlock passphrase>
+    Enter passphrase again for verification: <enter unlock passphrase again>
+    Use DMI data to generate passphrase salt?
+    If you say Y, the passphrase will work only on this system. [y/n]: <enter "y" or "n">
+    Hashed password saved! Protect that file properly (chown/chmod at least).
+
+chmod 400 /somewhere/safe/mypassword.secret
+chown root:root /somewhere/safe/mypassword.secret
+```
+
 8. a) Now, finally, use the sed-opal-unlocker to unlock the drive:
 
 ```
 cd sed-opal-unlocker
-./sed-opal-unlocker unlock /dev/disk /somewhere/safe/mypassword.secret
-./sed-opal-unlocker MBRunshadow /dev/disk /somewhere/safe/mypassword.secret
+./sed-opal-unlocker unlock,MBRunshadow /dev/disk /somewhere/safe/mypassword.secret
 ```
 
-If no errors were printed, it worked! Check yourself with commands from step 6.
+If no errors were printed, it worked! Check yourself with commands from step 6. Chaining both operations together instead of separate two calls is especially useful when using encrypted password hash files - you wouldn't need to enter the passphrase twice.
 
 8. b) If you're interested as well (or only) in S3 sleep support:
 
@@ -184,4 +218,4 @@ cd sed-opal-unlocker
 ./sed-opal-unlocker s3save /dev/disk /somewhere/safe/mypassword.secret
 ```
 
-9. You may put 8a / 8b commands in some initialization scripts, initramfs, etc. Writing a `.service` file should be fairly trivial. Good luck!
+9. You may put 8a / 8b commands in some initialization scripts, initramfs, etc. Writing a `.service` file should be fairly trivial. Integrating encrypted password files with "plymouth ask-for-password" should be also pretty trivial. Good luck and have fun!
