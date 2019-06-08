@@ -9,6 +9,9 @@ ENCRYPTED_PASSWORDS ?= 1
 ifeq ($(ENCRYPTED_PASSWORDS),1)
 override CFLAGS += -DENCRYPTED_PASSWORDS=1
 override LIBS   += -largon2
+ifeq ($(STATIC),1)
+override LIBS   += -lpthread
+endif
 endif
 
 SRCS := $(wildcard *.c)
