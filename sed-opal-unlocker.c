@@ -53,6 +53,13 @@ static int help(const char *banner)
 #ifdef ENCRYPTED_PASSWORDS
 	printf("\t                     If encrypted using relevant sedutil-passhasher.py option,\n");
 	printf("\t                     passphrase for unlocking is expected on stdin.\n");
+	printf("\n");
+	printf("Or:\n");
+	printf("\tsed-opal-unlocker decryptpasswd <in_encr_password_file_path> <out_plain_file_path>\n");
+	printf("\n");
+	printf("\t            Decrypt the password file. Note there's no way to tell whether\n");
+	printf("\t            correct unlocking passphrase has been provided other than trying\n");
+	printf("\t            to unlock the drive with produced decrypted password file.\n");
 #endif
 	printf("\n");
 	printf("Note: when using DTA sedutil-cli to initialize the drive without disabling\n");
@@ -63,10 +70,11 @@ static int help(const char *banner)
 }
 
 
-#define OP_LOCK     (1 << 0)
-#define OP_UNLOCK   (1 << 1)
-#define OP_UNSHADOW (1 << 2)
-#define OP_S3SAVE   (1 << 3)
+#define OP_LOCK         (1 << 0)
+#define OP_UNLOCK       (1 << 1)
+#define OP_UNSHADOW     (1 << 2)
+#define OP_S3SAVE       (1 << 3)
+#define OP_DECRYPT_PWD  (1 << 4)
 static int parse_operation(const char *opstring)
 {
 	char buf[1024], *p, *rest;
@@ -90,6 +98,8 @@ static int parse_operation(const char *opstring)
 			ret |= OP_S3SAVE;
 		else if (strcmp(p, "MBRunshadow") == 0)
 			ret |= OP_UNSHADOW;
+		else if (strcmp(p, "decryptpasswd") == 0)
+			ret |= OP_DECRYPT_PWD;
 		else
 			return -1;
 
@@ -211,6 +221,7 @@ int main(int argc, char* argv[])
 	int ret = 1;
 	int mode = -1;
 	int fd = -1;
+	int flags;
 	char buf[64];
 	int passwd_len = 0;
 	uint8_t passwd[OPAL_KEY_MAX];  // note: maybe not-NULL-terminated
@@ -225,9 +236,24 @@ int main(int argc, char* argv[])
 		return help("Invalid <operation>!");
 	if ((mode & OP_LOCK) && (mode != OP_LOCK))
 		return help("<operation> \"lock\" cannot be combined with other ones.");
+	if ((mode & OP_DECRYPT_PWD) && (mode != OP_DECRYPT_PWD))
+		return help("<operation> \"decryptpasswd\" cannot be combined with other ones.");
 
-	const char *dev = argv[2];
-	const char *passfile = argv[3];
+	const char *target_path = NULL, *passfile = NULL;
+	if (mode & OP_DECRYPT_PWD)
+	{
+#ifdef ENCRYPTED_PASSWORDS
+		passfile = argv[2];
+		target_path = argv[3];
+#else
+		goto encr_not_supported;
+#endif
+	}
+	else
+	{
+		target_path = argv[2];
+		passfile = argv[3];
+	}
 
 	// Load password
 	fd = open(passfile, O_RDONLY);
@@ -251,6 +277,7 @@ int main(int argc, char* argv[])
 	// Otherwise trim terminating newline (any flavor) when present.
 	if (passwd_len == 40 && memcmp(passwd, "\x00\x84\x11\xf8\x9a\x0f\x30\x93", 8) == 0)
 	{
+		if (mode & OP_DECRYPT_PWD) goto not_encr_file;
 		passwd_len = 32;
 		memmove(passwd, passwd + 8, passwd_len);
 	}
@@ -261,23 +288,24 @@ int main(int argc, char* argv[])
 		if (passwd_len <= 0)
 			goto exit;
 #else
-		fprintf(stderr, "Encrypted passwords not supported! Please compile with ENCRYPTED_PASSWORDS=1.\n");
-		goto exit;
+		goto encr_not_supported;
 #endif
 	}
 	else
 	{
+		if (mode & OP_DECRYPT_PWD) goto not_encr_file;
 		if (passwd[passwd_len - 1] == '\n')
 			passwd_len--;
 		if (passwd[passwd_len - 1] == '\r')
 			passwd_len--;
 	}
 
-	// Open the device
-	fd = open(dev, O_WRONLY);
+	// Open the device / target file
+	flags = (mode & OP_DECRYPT_PWD) ? (O_WRONLY | O_CREAT | O_TRUNC) : O_WRONLY;
+	fd = open(target_path, flags, 0600);
 	if (fd < 0)
 	{
-		snprintf(buf, sizeof(buf), "Failed to open %s", dev);
+		snprintf(buf, sizeof(buf), "Failed to open %s", target_path);
 		perror(buf);
 		goto exit;
 	}
@@ -306,7 +334,7 @@ int main(int argc, char* argv[])
 			ret = ioctl(fd, IOC_OPAL_LOCK_UNLOCK, &lk_unlk);
 			if (ret != 0)
 			{
-				snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_LOCK_UNLOCK, ...)", dev);
+				snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_LOCK_UNLOCK, ...)", target_path);
 				if (errno == 0)
 					errno = EINVAL;
 				perror(buf);
@@ -319,7 +347,7 @@ int main(int argc, char* argv[])
 			ret = ioctl(fd, IOC_OPAL_SAVE, &lk_unlk);
 			if (ret != 0)
 			{
-				snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_SAVE, ...)", dev);
+				snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_SAVE, ...)", target_path);
 				perror(buf);
 				goto cleanup;
 			}
@@ -343,9 +371,19 @@ int main(int argc, char* argv[])
 		ret = ioctl(fd, IOC_OPAL_ENABLE_DISABLE_MBR, &mbr_data);
 		if (ret != 0)
 		{
-			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_ENABLE_DISABLE_MBR, ...)", dev);
+			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_ENABLE_DISABLE_MBR, ...)", target_path);
 			if (errno == 0)
 				errno = EINVAL;
+			perror(buf);
+			goto cleanup;
+		}
+	}
+	if (mode & OP_DECRYPT_PWD)
+	{
+		if (write(fd, "\x00\x84\x11\xf8\x9a\x0f\x30\x93", 8) != 8
+			|| write(fd, passwd, passwd_len) != passwd_len)
+		{
+			snprintf(buf, sizeof(buf), "Failed to write decrypted password to %s", target_path);
 			perror(buf);
 			goto cleanup;
 		}
@@ -359,4 +397,14 @@ exit:
 	mem_zeroize(passwd, sizeof(passwd));
 	mem_zeroize(buf, sizeof(buf));
 	return !!ret;
+
+not_encr_file:
+#ifdef ENCRYPTED_PASSWORDS
+	fprintf(stderr, "<operation> \"decryptpasswd\" requires encrypted password file as input.\n");
+	goto exit;
+#else
+encr_not_supported:
+	fprintf(stderr, "Encrypted passwords not supported! Please compile with ENCRYPTED_PASSWORDS=1.\n");
+	goto exit;
+#endif
 }
