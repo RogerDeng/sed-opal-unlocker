@@ -46,7 +46,7 @@ static int help(const char *banner)
 	printf("\tsed-opal-unlocker <operation> <disk_path> <password_file_path>\n");
 	printf("\n");
 	printf("Where:\n");
-	printf("\t<operation> is one of: lock, unlock, MBRunshadow, s3save\n");
+	printf("\t<operation> is one of: lock, unlock, MBRunshadow, MBRunshadowOLD, s3save\n");
 	printf("\t            or comma-separated combination of them (except lock)\n");
 	printf("\t<disk_path> is device path, ex. /dev/sda, /dev/nvme0n1, etc.\n");
 	printf("\t<password_file_path> is path to file containing the admin1 password\n");
@@ -73,8 +73,9 @@ static int help(const char *banner)
 #define OP_LOCK         (1 << 0)
 #define OP_UNLOCK       (1 << 1)
 #define OP_UNSHADOW     (1 << 2)
-#define OP_S3SAVE       (1 << 3)
-#define OP_DECRYPT_PWD  (1 << 4)
+#define OP_UNSHADOW_OLD (1 << 3)
+#define OP_S3SAVE       (1 << 4)
+#define OP_DECRYPT_PWD  (1 << 5)
 static int parse_operation(const char *opstring)
 {
 	char buf[1024], *p, *rest;
@@ -98,6 +99,8 @@ static int parse_operation(const char *opstring)
 			ret |= OP_S3SAVE;
 		else if (strcmp(p, "MBRunshadow") == 0)
 			ret |= OP_UNSHADOW;
+		else if (strcmp(p, "MBRunshadowOLD") == 0)
+			ret |= OP_UNSHADOW_OLD;
 		else if (strcmp(p, "decryptpasswd") == 0)
 			ret |= OP_DECRYPT_PWD;
 		else
@@ -353,14 +356,15 @@ int main(int argc, char* argv[])
 			}
 		}
 	}
-	if (mode & OP_UNSHADOW)
+	if (mode & (OP_UNSHADOW | OP_UNSHADOW_OLD))
 	{
 		memset(&mbr_data, 0, sizeof(struct opal_mbr_data));
 
 		// Set MBRDone = Y
 		// NOTE: due to kernel API, this also sets MBREnabled = Y... but this should not hurt,
 		// cause MBRunshadow is expected to be called only when MBREnabled = Y already.
-		mbr_data.enable_disable = 1;
+		// See README for UNSHADOW vs UNSHADOW_OLD explanation...
+		mbr_data.enable_disable = (mode & OP_UNSHADOW_OLD) ? 1 : OPAL_MBR_ENABLE;
 		// 0 locking range (global range)
 		mbr_data.key.lr = 0;
 		// Copy key
