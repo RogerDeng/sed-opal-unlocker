@@ -57,7 +57,7 @@ If you are Gentoo Linux user, you will find an ebuild in [my overlay](https://gi
 ```
 
 Where:
-- `<operation>` is one of: lock, unlock, MBRunshadow, MBRunshadowOLD, s3save or comma-separated space-less combination of them (except lock)
+- `<operation>` is one of: lock, unlock, MBRunshadow, s3save or comma-separated space-less combination of them (except lock)
 - `<disk_path>` is device path, eg. /dev/sda, /dev/nvme0n1, etc.
 - `<password_file_path>` is path to file containing the disk password; if password file is encrypted, passphrase for decrypting it is read from stdin.
 
@@ -65,7 +65,6 @@ Operation specifies what the tool should do:
 - `lock`: lock the drive. Useful mainly for testing.
 - `unlock`: unlock the drive. The main feature of this tool.
 - `MBRunshadow`: disable MBR shadow image. Use after unlock when the disk has been configured to shadow MBR (see below).
-- `MBRunshadowOLD`: the same as MBRunshadow, but for older kernels (see below).
 - `s3save`: store password in the Linux kernel for enabling drive unlock after S3 sleep.
 
 When the disk has been initialized with sedutil-cli without using its `-n` option, the password which is send to the disk is a hash calculated using PKBDF2 algorithm from plain text password and the disk serial for salting. In order to use such password with `sed-opal-unlocker`, all you need to do is to store the hashed password in the password file. Fortunately, there's a Python script which will do this for you.
@@ -79,12 +78,6 @@ You need to call this script once, as root, cause it reads serial number from th
 When the last optional argument, [encrypt_password] is provided and set to 1, the hashed password file will be encrypted using additional "unlock passphrase", also interactively asked on standard input. The unlock passphrase can be optionally salted with current machine's DMI data (serial number or UUID), which makes it usable only on this machine. (This can be hacked around of course, but attacker needs to know this data cause it's not stored in the encrypted password file). When an encrypted password file is provided to sed-opal-unlocker, it will ask for the unlock passphrase on stdin. Note that password encryption currently cannot be used when disk has been initialized without password hashing (sedutil -n).
 
 Please also note that the encrypted password file does not store any authentication/verification data. Had the attacker obtained an encrypted passwordfile, he/she still cannot bruteforce it, cause only the disk can tell whether the unlock passphrase is correct or not. Even having access to the disk does not make bruteforcing easier, cause (a) argon2, (b) OPAL disks have limit how many times you may enter wrong password, and then will require a power-cycle to start talking to you again.
-
-### MBRunshadow vs MBRunshadowOLD
-
-Since kernel 5.2 and stable kernels 5.1.6, 5.0.20, 4.19.47 and 4.14.123, a bug in kernel API used by sed-opal-unlocker to switch off MBR shadowing has been fixed. However, the fix goes against the policy of not breaking userspace applications and now sed-opal-unlocker needs to be fixed as well... Cause it's not possible to easily tell whether the kernel is fixed or not, since version 0.3.1 the sed-opal-unlocker has switched to new (fixed) kernel API. However a new operation, MBRunshadowOLD, has been added to still support older (unfixed) kernels. The side effect of using wrong action (MBRunshadow on an old kernel or MBRunshadowOLD on a new kernel) is disabling the MBREnable flag, which means the whole shadowing is deactivated and PBA image is not presented to the host, so the system cannot boot from such device. In order to recover, use correct sed-opal-unlocker operation once or use sedutil-cli --setMBREnable on. See [this kernel commit](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/block/sed-opal.c?id=78bf47353b0041865564deeed257a54f047c2fdc) for more info.
-
-Also, please note that kernel 5.3 is going to have a better API for switching MBRDone flag and I'm already planning to utilize it in the sed-opal-unlocker. Please expect another rework in this area in a near future.
 
 ### Bonus: disk initialization notes
 
