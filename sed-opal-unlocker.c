@@ -226,7 +226,7 @@ int main(int argc, char* argv[])
 	int passwd_len = 0;
 	uint8_t passwd[OPAL_KEY_MAX];  // note: maybe not-NULL-terminated
 	struct opal_lock_unlock lk_unlk;
-	struct opal_mbr_data mbr_data;
+	struct opal_mbr_done mbr_done;
 
 	// Parse arguments
 	if (argc < 4)
@@ -355,23 +355,21 @@ int main(int argc, char* argv[])
 	}
 	if (mode & OP_UNSHADOW)
 	{
-		memset(&mbr_data, 0, sizeof(struct opal_mbr_data));
+		memset(&mbr_done, 0, sizeof(struct opal_mbr_done));
 
 		// Set MBRDone = Y
-		// NOTE: due to kernel API, this also sets MBREnabled = Y... but this should not hurt,
-		// cause MBRunshadow is expected to be called only when MBREnabled = Y already.
-		mbr_data.enable_disable = 1;
+		mbr_done.done_flag = OPAL_MBR_DONE;
 		// 0 locking range (global range)
-		mbr_data.key.lr = 0;
+		mbr_done.key.lr = 0;
 		// Copy key
-		memcpy(mbr_data.key.key, passwd, passwd_len);
+		memcpy(mbr_done.key.key, passwd, passwd_len);
 		// Set key size
-		mbr_data.key.key_len = passwd_len;
+		mbr_done.key.key_len = passwd_len;
 
-		ret = ioctl(fd, IOC_OPAL_ENABLE_DISABLE_MBR, &mbr_data);
+		ret = ioctl(fd, IOC_OPAL_MBR_DONE, &mbr_done);
 		if (ret != 0)
 		{
-			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_ENABLE_DISABLE_MBR, ...)", target_path);
+			snprintf(buf, sizeof(buf), "Failed to ioctl(%s, IOC_OPAL_MBR_DONE, ...)", target_path);
 			if (errno == 0)
 				errno = EINVAL;
 			perror(buf);
@@ -392,7 +390,7 @@ int main(int argc, char* argv[])
 cleanup:
 	close(fd);
 exit:
-	mem_zeroize(&mbr_data, sizeof(mbr_data));
+	mem_zeroize(&mbr_done, sizeof(mbr_done));
 	mem_zeroize(&lk_unlk, sizeof(lk_unlk));
 	mem_zeroize(passwd, sizeof(passwd));
 	mem_zeroize(buf, sizeof(buf));

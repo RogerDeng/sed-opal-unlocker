@@ -1,6 +1,8 @@
 # sed-opal-unlocker
 
-Micro-utility for unlocking TCG-OPAL encrypted disks, utilizing CONFIG_BLK_SED_OPAL interface introduced in kernel 4.11. Also allows saving password in the running kernel for S3 Sleep support, cause it was a cheap feature to have. Based on Kyle Manna's [opalctl](https://github.com/kylemanna/opalctl) nano-utility.
+Micro-utility for unlocking TCG-OPAL encrypted disks, utilizing CONFIG_BLK_SED_OPAL interface introduced in kernel 4.11 (but see [1] below). Also allows saving password in the running kernel for S3 Sleep support, cause it was a cheap feature to have. Based on Kyle Manna's [opalctl](https://github.com/kylemanna/opalctl) nano-utility.
+
+[1] Since 1.0.0, sed-opal-unlocker requires kernel 5.3 or newer, cause it utilizes IOC_OPAL_MBR_DONE interface. If you need to use older kernel, checkout v0.3.1 and read "MBRunshadow vs MBRunshadowOLD" section carefully in its README if you plan to use MBRunshadow.
 
 
 ### Background
